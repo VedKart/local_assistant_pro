@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Local Assistant Pro</title>
+<style>
+  body{font-family:system-ui,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#0b0d10;color:#e6eaef}
+  .wrap{max-width:1000px;margin:0 auto;padding:24px}
+  .card{background:#11151b;border:1px solid #1e2630;border-radius:16px;box-shadow:0 8px 30px rgba(0,0,0,.3);padding:16px;margin-bottom:16px}
+  .row{display:flex;gap:8px;align-items:center}
+  input,button,textarea,select{border-radius:12px;border:1px solid #2b3643;background:#0f1318;color:#e6eaef;padding:10px}
+  button{cursor:pointer}
+  .msg{white-space:pre-wrap}.user{color:#9ad}.bot{color:#cde}
+  #preview{width:100%;max-height:360px;object-fit:contain;border-radius:12px;border:1px solid #2b3643}
+  small.muted{color:#8aa}
+</style></head>
+<body>
+<div class="wrap">
+  <h2>Local Assistant Pro</h2>
+
+  <div class="card">
+    <div class="row" style="gap:16px">
+      <div style="flex:2">
+        <div class="row">
+          <input id="q" placeholder="Введите сообщение" style="flex:1" />
+          <button type="button" onclick="sendMsg()">Отправить</button>
+          <button type="button" onclick="toggleRec(event)" title="Распознавание речи">🎤</button>
+          <button type="button" onclick="toggleWatch(event)" title="Захват экрана">👁️</button>
+        </div>
+        <div id="chat" class="card" style="min-height:220px;margin-top:10px"></div>
+        <audio id="player" controls style="margin-top:8px;width:100%"></audio>
+      </div>
+      <div style="flex:1">
+        <img id="preview" alt="скриншот" />
+        <div class="row" style="margin-top:8px">
+          <button type="button" onclick="refreshPreview()">Обновить превью</button>
+          <button type="button" onclick="doctor()">Диагностика</button>
+        </div>
+        <small class="muted">Секреты вводите во всплывающем окне — они не сохраняются.</small>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="row" style="gap:16px">
+      <div style="flex:2">
+        <textarea id="persona_prompt" rows="5" placeholder="Системный промпт (персона/стиль)"></textarea>
+        <div class="row" style="margin-top:6px">
+          <input id="persona_name" placeholder="Имя персоны" style="flex:1">
+          <select id="tts_voice"><option value="xenia">xenia</option><option value="aidar">aidar</option><option value="baya">baya</option></select>
+          <button onclick="savePersona()">Сохранить персону</button>
+        </div>
+      </div>
+      <div style="flex:1">
+        <input type="file" id="file"/>
+        <button type="button" onclick="doUpload()">Загрузить в KB</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+let watching=false,mr,chunks=[],lastShot=null;
+const chat=document.getElementById('chat'),q=document.getElementById('q'),player=document.getElementById('player');
+const persona_prompt=document.getElementById('persona_prompt');
+const persona_name=document.getElementById('persona_name');
+const tts_voice=document.getElementById('tts_voice');
+
+function add(role,text){
+  const d=document.createElement('div');
+  d.className='msg '+(role==='user'?'user':'bot');
+  d.textContent=(role==='user'?'Вы: ':'Ассистент: ')+text;
+  chat.appendChild(d);chat.scrollTop=chat.scrollHeight;
+}
+
+async function sendMsg(){
+  const t=q.value.trim();if(!t)return;add('user',t);q.value='';
+  const r=await fetch('/ask',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({message:t})});
+  const j=await r.json();add('bot',j.answer||'(пусто)');
+  if(j.audio){player.src=j.audio;player.play().catch(()=>{});} }
+
+async function doUpload(){
+  const f=document.getElementById('file').files[0];if(!f)return alert('Выберите файл');
+  const fd=new FormData();fd.append('file',f);
+  const r=await fetch('/upload',{method:'POST',body:fd});const j=await r.json();alert('Загружено: '+(j.path||''));}
+
+async function toggleRec(ev){
+  const btn = ev && ev.target ? ev.target : null;
+  if(!mr||mr.state==='inactive'){
+    const stream=await navigator.mediaDevices.getUserMedia({audio:true});
+    mr=new MediaRecorder(stream);chunks=[];mr.ondataavailable=e=>{if(e.data)chunks.push(e.data)};
+    mr.onstop=async()=>{
+      const blob=new Blob(chunks,{type:'audio/webm'});
+      const fd=new FormData();fd.append('audio',blob,'rec.webm');
+      try{
+        const r=await fetch('/stt',{method:'POST',body:fd});
+        const j=await r.json();
+        q.value=(j.text||'').trim();
+      }catch(err){console.error(err);alert('STT ошибка');}
+      if(btn) btn.textContent='🎤';
+    };
+    mr.start(); if(btn) btn.textContent='⏹️';
+    setTimeout(()=>{ if(mr.state!=='inactive'){ mr.stop(); } },5000);
+  }else{ mr.stop(); if(btn) btn.textContent='🎤'; }
+}
+
+async function toggleWatch(ev){
+  watching=!watching;
+  await fetch(watching?'/start_watch':'/stop_watch',{method:'POST'});
+  const btn = ev && ev.target ? ev.target : null;
+  if(btn) btn.textContent=watching?'🛑':'👁️';
+  if(watching){setTimeout(refreshPreview,600);} 
+}
+
+async function doctor(){
+  const r=await fetch('/doctor',{method:'POST'});const j=await r.json();
+  alert('Диагностика\n'+JSON.stringify(j,null,2));}
+
+async function savePersona(){
+  const payload={ name: persona_name.value||undefined, base_prompt: persona_prompt.value||undefined, tts_voice: tts_voice.value||undefined };
+  const r=await fetch('/persona',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const j=await r.json();alert('Ок: '+JSON.stringify(j));}
+
+async function refreshPreview(){
+  try{
+    const r=await fetch('/watch_status'); const j=await r.json();
+    if(j.last){ document.getElementById('preview').src=j.last+'?t='+(Date.now()); }
+    if(watching){ setTimeout(refreshPreview,1200); }
+  }catch(e){ console.error(e); }
+}
+</script>
+</body></html>
